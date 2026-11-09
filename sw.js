@@ -1,6 +1,6 @@
 /* Service worker: guarda o app para funcionar sem internet.
    Tenta a rede primeiro (para receber atualizações) e cai no que está guardado. */
-const V = 'notas-v4'; /* troque a versão a cada publicação */
+const V = 'notas-v5'; /* troque a versão a cada publicação */
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png'];
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(V).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
