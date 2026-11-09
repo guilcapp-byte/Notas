@@ -227,6 +227,20 @@ body.resizing{cursor:col-resize;user-select:none}
   .resizer{display:none}
   .ftog{width:32px;height:40px;margin:-8px -8px -8px -10px}
 }
+/* recolher itens dentro da nota (como no Obsidian) */
+.row{position:relative}
+.fold{position:absolute;z-index:2;left:calc(var(--lvl,0)*1.7em - 1.25em);top:.18em;width:1.15em;height:1.2em;display:flex;align-items:center;justify-content:center;color:var(--muted);border-radius:5px;cursor:pointer;opacity:0;transition:opacity .12s,transform .12s}
+.fold svg{transition:transform .15s}
+.row.has-kids:hover > .fold,.row.folded > .fold,.fold:focus-visible{opacity:1}
+.fold:hover{background:var(--hover);color:var(--text)}
+.row.folded > .fold svg{transform:rotate(-90deg)}
+.row.folded::after{content:"…";flex:none;align-self:flex-end;margin-bottom:.15em;cursor:pointer;margin-left:.3em;padding:0 .35em;border-radius:5px;background:var(--hover);color:var(--muted);font-size:.85em;line-height:1.55em}
+.row.folded > .blk{flex:0 1 auto}
+.row.fold-hidden{display:none}
+.fold{-webkit-tap-highlight-color:transparent}
+.row.h1 > .fold{top:1.05em}.row.h2 > .fold{top:.8em}.row.h3 > .fold{top:.62em}
+@media (hover:none){ .row.has-kids > .fold{opacity:.55} }
+@media (max-width:820px){ .fold{left:calc(var(--lvl,0)*1.7em - 20px);width:20px;height:30px;top:calc((1.55em - 30px) / 2)} .row.t-task > .fold,.row.t-ul > .fold,.row.t-ol > .fold{top:calc(9px + (1.55em - 30px) / 2)} }
 </style>
 </head>
 <body data-view="list">
@@ -1689,6 +1703,7 @@ function loadCurrentFromNote(keepCaret) {
   const n = S.current;
   const caret = keepCaret ? currentCaret() : null;
   S.doc = parseMd(n.text);
+  restoreFolds();
   if (!keepCaret) { S.undo = []; S.redo = []; S.lastKey = ''; }
   S.dirty = false;
   $('#title').value = n.name;
@@ -1699,7 +1714,7 @@ function loadCurrentFromNote(keepCaret) {
 }
 
 function closeEditor() {
-  S.current = null; S.doc = null; S.dirty = false;
+  S.current = null; S.doc = null; S.dirty = false; S.folds = new Set(); S.hidden = new Set();
   $('#edScroll').hidden = true; $('#toolbar').hidden = true; $('#btnMore').hidden = true;
   $('#emptyState').hidden = false;
   $('#conflict').hidden = true;
@@ -1732,6 +1747,7 @@ function saveNow() {
       n.text = text; n.mtime = st.mtime; n._h = null;
       if (S.ver === v) { S.dirty = false; setSaveState('Salvo'); }
       refreshRow(n);
+      if (S.current === n) saveFolds();
       Sync.touch(n.path);
     } catch (e) {
       console.error(e);
@@ -1828,11 +1844,85 @@ function renderDoc(focus) {
   S.doc.blocks.forEach((b) => frag.appendChild(buildRow(b)));
   root.appendChild(frag);
   root.classList.toggle('is-empty', S.doc.blocks.length === 1 && S.doc.blocks[0].t === 'p' && S.doc.blocks[0].text === '');
+  applyFolds();
   if (focus) focusBlock(focus.id, focus.off);
   updateToolbar();
 }
 
 function rowEl(id) { return $('#doc .row[data-id="' + id + '"]'); }
+
+/* ---------------------------------------------------------------- recolher itens (como no Obsidian)
+   Uma linha de lista com itens mais recuados embaixo, ou um título com texto embaixo,
+   ganha uma setinha à esquerda. Recolher é só visual: o arquivo .md não muda. */
+const LISTY = (t) => t === 'ul' || t === 'ol' || t === 'task' || t === 'quote';
+const FOLD_SVG = '<svg aria-hidden="true" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
+function foldEnd(idx) {
+  const bl = S.doc.blocks, b = bl[idx];
+  let j = idx + 1;
+  if (b.t === 'h') { while (j < bl.length && !(bl[j].t === 'h' && bl[j].lvl <= b.lvl)) j++; return j; }
+  if (LISTY(b.t)) {
+    const lv = indentLevel(b, S.doc.unit);
+    while (j < bl.length && LISTY(bl[j].t) && indentLevel(bl[j], S.doc.unit) > lv) j++;
+  }
+  return j;
+}
+function applyFolds() {
+  if (!S.doc) return;
+  if (!S.folds) S.folds = new Set();
+  S.hidden = new Set();
+  const bl = S.doc.blocks, rows = $('#doc').children;
+  for (let i = 0; i < bl.length; i++) {
+    const row = rows[i]; if (!row || row.dataset.id !== bl[i].id) continue;
+    const end = foldEnd(i), kids = end > i + 1;
+    let fd = row.querySelector(':scope > .fold');
+    if (kids && !fd) {
+      fd = document.createElement('span'); fd.className = 'fold'; fd.setAttribute('role', 'button');
+      fd.innerHTML = FOLD_SVG; row.prepend(fd);
+    } else if (!kids && fd) { fd.remove(); fd = null; }
+    if (!kids) S.folds.delete(bl[i].id);
+    const folded = kids && S.folds.has(bl[i].id);
+    row.classList.toggle('has-kids', kids);
+    row.classList.toggle('folded', folded);
+    if (fd) { fd.setAttribute('aria-expanded', folded ? 'false' : 'true'); fd.setAttribute('aria-label', folded ? 'Expandir' : 'Recolher'); fd.title = folded ? 'Expandir' : 'Recolher'; }
+    const hid = S.hidden.has(bl[i].id);
+    row.classList.toggle('fold-hidden', hid);
+    if (!hid && folded) for (let j = i + 1; j < end; j++) S.hidden.add(bl[j].id);
+  }
+}
+function toggleFold(id) {
+  const idx = S.doc.blocks.findIndex((b) => b.id === id); if (idx < 0) return;
+  if (S.folds.has(id)) S.folds.delete(id);
+  else {
+    S.folds.add(id);
+    const c = currentCaret();
+    if (c && c.idx > idx && c.idx < foldEnd(idx)) { applyFolds(); focusBlock(id); }
+  }
+  applyFolds();
+  saveFolds();
+}
+function revealBlock(id) {
+  const bl = S.doc.blocks, idx = bl.findIndex((b) => b.id === id);
+  let changed = false;
+  for (let i = 0; i < idx; i++) if (S.folds.has(bl[i].id) && foldEnd(i) > idx) { S.folds.delete(bl[i].id); changed = true; }
+  if (changed) { applyFolds(); saveFolds(); }
+}
+const foldKey = (b) => b.t + ':' + b.text;
+function readFoldStore() { try { return JSON.parse(localStorage.getItem('notas.folds') || '{}'); } catch (e) { return {}; } }
+function saveFolds() {
+  if (!S.current || !S.doc || !S.folds) return;
+  const all = readFoldStore();
+  const keys = S.doc.blocks.filter((b) => S.folds.has(b.id)).map(foldKey);
+  if (keys.length) { delete all[S.current.path]; all[S.current.path] = keys; } else delete all[S.current.path];
+  const ks = Object.keys(all); while (ks.length > 300) delete all[ks.shift()];
+  try { localStorage.setItem('notas.folds', JSON.stringify(all)); } catch (e) { /* ok */ }
+}
+function restoreFolds() {
+  S.folds = new Set();
+  const keys = (S.current && readFoldStore()[S.current.path]) || [];
+  if (!keys.length) return;
+  const left = keys.slice();
+  S.doc.blocks.forEach((b) => { const k = left.indexOf(foldKey(b)); if (k >= 0) { S.folds.add(b.id); left.splice(k, 1); } });
+}
 
 function toRaw(el, b, off) {
   if (el.dataset.mode === 'raw') return;
@@ -1860,6 +1950,7 @@ function setCaret(el, off, off2) {
 }
 
 function focusBlock(id, off) {
+  if (S.hidden && S.hidden.has(id)) revealBlock(id);
   const row = rowEl(id); if (!row) return;
   const el = $('.blk', row); if (!el) return;
   const b = S.doc.blocks.find((x) => x.id === id);
@@ -2087,7 +2178,7 @@ function splitBlock(idx, off) {
   else if (b.t === 'quote') nb = newBlock('quote', tail, { ind: b.ind || '' });
   else nb = newBlock('p', tail);
   b.text = head;
-  bl.splice(idx + 1, 0, nb);
+  bl.splice(tail === '' && S.folds && S.folds.has(b.id) ? foldEnd(idx) : idx + 1, 0, nb);
   renumber();
   renderDoc({ id: nb.id, off: 0 });
   markDirty();
@@ -2298,7 +2389,7 @@ function caretLineEdge(el) {
 
 function neighborText(idx, dir) {
   const bl = S.doc.blocks;
-  for (let i = idx + dir; i >= 0 && i < bl.length; i += dir) if (bl[i].t !== 'hr') return bl[i];
+  for (let i = idx + dir; i >= 0 && i < bl.length; i += dir) if (bl[i].t !== 'hr' && !(S.hidden && S.hidden.has(bl[i].id))) return bl[i];
   return null;
 }
 
@@ -2476,8 +2567,11 @@ function onDocMouseDown(e) {
   if (a) { e.preventDefault(); return; }
   const cb = e.target.closest('.cb');
   if (cb) e.preventDefault();
+  if (e.target.closest('.fold')) e.preventDefault();
 }
 function onDocClick(e) {
+  const fd = e.target.closest('.fold');
+  if (fd) { e.preventDefault(); toggleFold(fd.closest('.row').dataset.id); return; }
   const cb = e.target.closest('.cb');
   if (cb) { const row = cb.closest('.row'); toggleDone(idxOfRow(row)); return; }
   const a = e.target.closest('a.wl');
