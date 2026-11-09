@@ -33,7 +33,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,.blk:focus-visible
 .blk:focus{outline:none}
 svg{flex:none}
 
-.app{display:grid;grid-template-columns:232px 312px minmax(0,1fr);height:100dvh;overflow:hidden}
+.app{display:grid;grid-template-columns:var(--side-w,232px) var(--list-w,312px) minmax(0,1fr);height:100dvh;overflow:hidden;position:relative}
 .pane{min-height:0;min-width:0;display:flex;flex-direction:column}
 .mobile-only{display:none}
 
@@ -212,6 +212,21 @@ dialog h3{margin:0 0 12px;font-size:18px}
 .syncform input{font-size:16px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;width:100%;box-sizing:border-box}
 .firstsync p{margin:0 0 8px}
 
+/* colunas ajustáveis e pastas recolhíveis */
+.resizer{position:absolute;top:0;bottom:0;width:9px;margin-left:-5px;cursor:col-resize;z-index:6;touch-action:none}
+.resizer::after{content:"";position:absolute;top:0;bottom:0;left:4px;width:1px;background:transparent;transition:background .15s}
+.resizer:hover::after,.resizer.drag::after{background:var(--accent);width:2px}
+#rzSide{left:var(--side-w,232px)}
+#rzList{left:calc(var(--side-w,232px) + var(--list-w,312px))}
+body.resizing{cursor:col-resize;user-select:none}
+.ftog{flex:none;width:18px;height:22px;margin:0 -6px 0 -6px;display:flex;align-items:center;justify-content:center;color:var(--muted);border-radius:5px}
+.ftog:not(.none):hover{background:var(--hover);color:var(--text)}
+.ftog svg{transition:transform .15s}
+.ftog.open svg{transform:rotate(90deg)}
+@media (max-width:820px){
+  .resizer{display:none}
+  .ftog{width:32px;height:40px;margin:-8px -8px -8px -10px}
+}
 </style>
 </head>
 <body data-view="list">
@@ -241,6 +256,9 @@ dialog h3{margin:0 0 12px;font-size:18px}
     </div>
     <div id="notes" class="notes" role="listbox" aria-label="Lista de notas"></div>
   </section>
+
+  <div class="resizer" id="rzSide" role="separator" aria-orientation="vertical" aria-label="Largura das pastas" title="Arraste para ajustar (duplo clique volta ao padrão)"></div>
+  <div class="resizer" id="rzList" role="separator" aria-orientation="vertical" aria-label="Largura da lista de notas" title="Arraste para ajustar (duplo clique volta ao padrão)"></div>
 
   <main id="editorPane" class="pane editor">
     <header class="ed-head">
@@ -1348,7 +1366,8 @@ const S = {
   current: null, doc: null, dirty: false, ver: 0, saveT: 0, saveChain: Promise.resolve(),
   undo: [], redo: [], lastKey: '', lastT: 0, pollT: 0, lastScan: 0,
   settings: { fs: 14, theme: 'auto', dailyFolder: '', dailyFmt: 'YYYY-MM-DD' },
-  pendingHandle: null, ptr: false
+  pendingHandle: null, ptr: false,
+  openFolders: new Set((() => { try { return JSON.parse(localStorage.getItem('notas.openFolders') || '[]'); } catch (e) { return []; } })())
 };
 
 const IC = {
@@ -1458,6 +1477,8 @@ const darkMq = window.matchMedia('(prefers-color-scheme: dark)');
 function applySettings() {
   const r = document.documentElement;
   r.style.setProperty('--fs', S.settings.fs + 'px');
+  if (S.settings.sideW) r.style.setProperty('--side-w', S.settings.sideW + 'px'); else r.style.removeProperty('--side-w');
+  if (S.settings.listW) r.style.setProperty('--list-w', S.settings.listW + 'px'); else r.style.removeProperty('--list-w');
   r.dataset.theme = S.settings.theme === 'auto' ? (darkMq.matches ? 'dark' : 'light') : S.settings.theme;
 }
 darkMq.addEventListener('change', applySettings);
@@ -1528,19 +1549,43 @@ function renderSidebar() {
   for (const n of S.notes.values()) counts.set(n.folder, (counts.get(n.folder) || 0) + 1);
   const items = [{ key: '*', label: 'Todas as notas', count: S.notes.size, depth: 0, icon: IC.all }];
   if (counts.get('')) items.push({ key: '', label: 'Raiz do cofre', count: counts.get(''), depth: 0, icon: IC.folder });
-  Array.from(S.folders).sort(cmpPath).forEach((f) => {
+  const all = Array.from(S.folders).sort(cmpPath);
+  const parents = new Set();
+  all.forEach((f) => { const i = f.lastIndexOf('/'); if (i > 0) parents.add(f.slice(0, i)); });
+  /* subpastas ficam recolhidas até serem abertas (o estado fica guardado) */
+  const shown = (f) => {
     const parts = f.split('/');
-    items.push({ key: f, label: parts[parts.length - 1], count: counts.get(f) || 0, depth: parts.length - 1, icon: IC.folder });
+    for (let i = 1; i < parts.length; i++) {
+      const anc = parts.slice(0, i).join('/');
+      if (!S.openFolders.has(anc)) return false;
+    }
+    return true;
+  };
+  all.filter(shown).forEach((f) => {
+    const parts = f.split('/');
+    items.push({ key: f, label: parts[parts.length - 1], count: counts.get(f) || 0, depth: parts.length - 1, icon: IC.folder, kids: parents.has(f) });
   });
+  const anyKids = parents.size > 0;
   items.forEach((it) => {
     const b = document.createElement('button');
     b.type = 'button'; b.className = 'frow' + (S.folder === it.key ? ' on' : '');
-    b.style.setProperty('--d', it.depth);
+    b.style.setProperty('--d', it.depth); b.dataset.key = it.key;
     b.setAttribute('aria-current', S.folder === it.key ? 'true' : 'false');
-    b.innerHTML = '<span class="ficon">' + it.icon + '</span><span class="fname"></span><span class="fcount"></span>';
+    const open = it.kids && S.openFolders.has(it.key);
+    if (it.kids) b.setAttribute('aria-expanded', open ? 'true' : 'false');
+    b.innerHTML = (anyKids ? '<span class="ftog' + (it.kids ? '' : ' none') + (open ? ' open' : '') + '" title="' + (open ? 'Recolher' : 'Expandir') + '">' + (it.kids ? '<svg aria-hidden="true" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg>' : '') + '</span>' : '') +
+      '<span class="ficon">' + it.icon + '</span><span class="fname"></span><span class="fcount"></span>';
     $('.fname', b).textContent = it.label;
     $('.fcount', b).textContent = it.count;
-    b.addEventListener('click', () => selectFolder(it.key));
+    b.addEventListener('click', (e) => {
+      if (it.kids && e.target.closest('.ftog')) { toggleFolder(it.key, !open); return; }
+      selectFolder(it.key);
+    });
+    b.addEventListener('keydown', (e) => {
+      if (!it.kids) return;
+      if (e.key === 'ArrowRight' && !open) { e.preventDefault(); toggleFolder(it.key, true, true); }
+      if (e.key === 'ArrowLeft' && open) { e.preventDefault(); toggleFolder(it.key, false, true); }
+    });
     box.appendChild(b);
   });
   $('#vaultName').textContent = S.store ? (S.store.kind === 'vault' ? S.store.name : 'Neste aparelho') : 'Notas';
@@ -1601,8 +1646,16 @@ function renderList() {
   }
 }
 
+function toggleFolder(key, open, refocus) {
+  if (open) S.openFolders.add(key); else S.openFolders.delete(key);
+  try { localStorage.setItem('notas.openFolders', JSON.stringify(Array.from(S.openFolders))); } catch (e) { /* ok */ }
+  renderSidebar();
+  if (refocus) { const r = $$('#folders .frow').find((x) => x.dataset.key === key); if (r) r.focus(); }
+}
+
 function selectFolder(key) {
   S.folder = key; S.limit = 400;
+  if (key && key !== '*') { const p = key.split('/'); for (let i = 1; i < p.length; i++) S.openFolders.add(p.slice(0, i).join('/')); }
   renderAll();
   if (MOBILE.matches) setPane('list');
 }
@@ -2516,6 +2569,7 @@ async function newFolder() {
   if (S.folders.has(path)) { toast('Essa pasta já existe.'); return; }
   try { await S.store.mkdir(path); } catch (e) { toast('Não consegui criar a pasta.'); return; }
   S.folders.add(path); S.folder = path;
+  { const p = path.split('/'); for (let i = 1; i < p.length; i++) S.openFolders.add(p.slice(0, i).join('/')); }
   rebuildFolders(Array.from(S.folders));
   renderAll();
 }
@@ -2828,7 +2882,35 @@ async function useLocal() {
   await startStore(st, 'local');
 }
 
+/* arrastar as divisórias entre as colunas (só no computador) */
+function bindResizers() {
+  const lim = { sideW: [150, 480, 232], listW: [220, 640, 312] };
+  [['#rzSide', 'sideW'], ['#rzList', 'listW']].forEach(([sel, key]) => {
+    const h = $(sel); if (!h) return;
+    h.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const start = e.clientX, w0 = S.settings[key] || lim[key][2];
+      h.setPointerCapture(e.pointerId); h.classList.add('drag'); document.body.classList.add('resizing');
+      const move = (ev) => {
+        let w = Math.round(w0 + ev.clientX - start);
+        w = Math.max(lim[key][0], Math.min(lim[key][1], w));
+        const other = key === 'sideW' ? (S.settings.listW || lim.listW[2]) : (S.settings.sideW || lim.sideW[2]);
+        w = Math.min(w, window.innerWidth - other - 320); /* deixa espaço para o editor */
+        S.settings[key] = w; applySettings();
+      };
+      const up = () => {
+        h.removeEventListener('pointermove', move); h.removeEventListener('pointerup', up); h.removeEventListener('pointercancel', up);
+        h.classList.remove('drag'); document.body.classList.remove('resizing'); saveSettings();
+      };
+      h.addEventListener('pointermove', move); h.addEventListener('pointerup', up); h.addEventListener('pointercancel', up);
+    });
+    h.addEventListener('dblclick', () => { delete S.settings[key]; applySettings(); saveSettings(); });
+  });
+}
+
 function bindStatic() {
+  bindResizers();
   $('#btnNew').addEventListener('click', newNote);
   $('#btnNewFolder').addEventListener('click', newFolder);
   $('#btnSettings').addEventListener('click', openSettings);
